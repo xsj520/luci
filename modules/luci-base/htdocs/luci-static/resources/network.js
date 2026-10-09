@@ -349,13 +349,21 @@ function maskToPrefix(mask, v6) {
 	return bits;
 }
 
+function isConfigOnlyWireless() {
+	var devices = uci.sections('wireless', 'wifi-device');
+
+	return devices.length > 0 && devices.every(function(device) {
+		return (device.type == 'mt_dbdc' || device.type == 'qcawifi' || device.type == 'qcawificfg80211');
+	});
+}
+
 function initNetworkState(refresh) {
 	if (_state == null || refresh) {
 		_init = _init || Promise.all([
 			L.resolveDefault(callNetworkInterfaceDump(), []),
 			L.resolveDefault(callLuciBoardJSON(), {}),
 			L.resolveDefault(callLuciNetworkDevices(), {}),
-			L.resolveDefault(callLuciWirelessDevices(), {}),
+			isConfigOnlyWireless() ? Promise.resolve({}) : L.resolveDefault(callLuciWirelessDevices(), {}),
 			L.resolveDefault(callLuciHostHints(), {}),
 			getProtocolHandlers(),
 			L.resolveDefault(uci.load('network')),

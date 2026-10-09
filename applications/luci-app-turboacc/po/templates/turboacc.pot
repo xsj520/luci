@@ -98,6 +98,10 @@ msgstr ""
 msgid "IPv6 acceleration"
 msgstr ""
 
+#: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:178
+msgid "MTK WED WO offloading"
+msgstr ""
+
 #: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:128
 msgid "MediaTek HNAT"
 msgstr ""
@@ -112,6 +116,10 @@ msgstr ""
 
 #: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:146
 msgid "Requires hardware NAT support. Implemented at least for mt7621."
+msgstr ""
+
+#: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:179
+msgid "Requires hardware support, implemented at least for Filogic 8x0"
 msgstr ""
 
 #: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:126
@@ -133,6 +141,10 @@ msgstr ""
 
 #: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:187
 msgid "TCP congestion control algorithm."
+msgstr ""
+
+#: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:180
+msgid "Takes effect after rebooting the router."
 msgstr ""
 
 #: applications/luci-app-turboacc/htdocs/luci-static/resources/view/turboacc.js:119

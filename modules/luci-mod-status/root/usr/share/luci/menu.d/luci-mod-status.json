@@ -135,7 +135,7 @@
 		}
 	},
 
-	"admin/status/realtime/bandwidth": {
+	"admin/status/bandwidth": {
 		"title": "Traffic",
 		"order": 2,
 		"action": {

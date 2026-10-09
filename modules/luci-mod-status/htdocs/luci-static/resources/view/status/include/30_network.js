@@ -73,7 +73,8 @@ return baseclass.extend({
 			fs.trimmed('/proc/sys/net/netfilter/nf_conntrack_count'),
 			fs.trimmed('/proc/sys/net/netfilter/nf_conntrack_max'),
 			network.getWANNetworks(),
-			network.getWAN6Networks(),
+			L.resolveDefault(fs.stat('/proc/sys/net/ipv6'), null),
+			L.resolveDefault(network.getWAN6Networks(), []),
 			L.resolveDefault(callOnlineUsers(), {})
 		]);
 	},
@@ -82,8 +83,8 @@ return baseclass.extend({
 		var ct_count  = +data[0],
 		    ct_max    = +data[1],
 		    wan_nets  = data[2],
-		    wan6_nets = data[3],
-		    onlineusers = data[4];
+		    wan6_nets = data[3] ? data[4] : [],
+		    onlineusers = data[5];
 
 		var fields = [
 			_('Active Connections'), ct_max ? ct_count : null,
