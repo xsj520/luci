@@ -21,10 +21,7 @@
 <footer style="text-wrap: auto">
 	<div>
 		
-	</div>
-</footer>
-</div>
-</div>
+	
 <script>
 	// thanks for Jo-Philipp Wich <jow@openwrt.org>
 	var luciLocation = {{ ctx.path }};
