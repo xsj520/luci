@@ -18,9 +18,6 @@
 
 </div>
 <!-- added style="text-wrap: auto" but on this page it is still not the best solution. I will take it to consideration next time :) -->
-<footer style="text-wrap: auto">
-	<div>
-		
 	
 <script>
 	// thanks for Jo-Philipp Wich <jow@openwrt.org>
