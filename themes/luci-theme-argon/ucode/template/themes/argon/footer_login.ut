@@ -16,9 +16,19 @@
 	Licensed to the public under the Apache License 2.0
 -#}
 
+		</div>
+		<footer class="mobile-hide" style="text-wrap: auto">
+			<div class="footer-content" style="display: flex; flex-wrap: wrap; gap: 0.5em; justify-content: end;">
+				<a class="luci-link" href="https://github.com/openwrt/luci" target="_blank">Powered by {{ version.luciname }} ({{ version.luciversion }})</a>
+
+				<span class="footer-separator">|</span>
+
+				
+				<ul class="breadcrumb pull-right" id="modemenu" style="display:none"></ul>
+			</div>
+		</footer>
+	</div>
 </div>
-<!-- added style="text-wrap: auto" but on this page it is still not the best solution. I will take it to consideration next time :) -->
-	
 <script>
 	// thanks for Jo-Philipp Wich <jow@openwrt.org>
 	var luciLocation = {{ ctx.path }};
@@ -35,5 +45,6 @@
 		}
 	});
 </script>
+<script type="text/javascript">L.require('menu-argon')</script>
 </body>
 </html>
