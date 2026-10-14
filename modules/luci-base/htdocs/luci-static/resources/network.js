@@ -361,11 +361,13 @@ function refreshWirelessState() {
 		return _wirelessInit;
 
 	const wifiDevices = uci.sections('wireless', 'wifi-device');
-	const qcaOnly = wifiDevices.length > 0 && wifiDevices.every(function(device) {
-		return (device.type == 'qcawifi' || device.type == 'qcawificfg80211');
+	const configOnly = wifiDevices.length > 0 && wifiDevices.every(function(device) {
+		// Legacy MT7615 DBDC uses ra0/rax0 radio sections; MT798x uses ra/rax.
+		return ((device.type == 'mt_dbdc' && /^ra[xiyez]?0$/.test(device['.name'])) ||
+			device.type == 'qcawifi' || device.type == 'qcawificfg80211');
 	});
 
-	if (qcaOnly)
+	if (configOnly)
 		return Promise.resolve();
 
 	_wirelessInit = L.resolveDefault(callLuciWirelessDevices(), {}).then(function(radios) {
@@ -403,6 +405,18 @@ function refreshWirelessState() {
 	});
 
 	return _wirelessInit;
+}
+
+function waitForWirelessState() {
+	const wifiDevices = uci.sections('wireless', 'wifi-device');
+	const hasConfigOnlyWifi = wifiDevices.some(function(device) {
+		// Legacy MT7615 DBDC uses ra0/rax0 radio sections; MT798x uses ra/rax.
+		return ((device.type == 'mt_dbdc' && /^ra[xiyez]?0$/.test(device['.name'])) ||
+			device.type == 'qcawifi' || device.type == 'qcawificfg80211');
+	});
+	const refresh = refreshWirelessState();
+
+	return hasConfigOnlyWifi ? Promise.resolve() : refresh;
 }
 
 function initNetworkState(refresh) {
@@ -1401,9 +1415,7 @@ Network = baseclass.extend(/** @lends LuCI.network.prototype */ {
 	 * be found.
 	 */
 	getWifiDevice(devname) {
-		return initNetworkState().then(L.bind(function() {
-			refreshWirelessState();
-
+		return initNetworkState().then(waitForWirelessState).then(L.bind(function() {
 			const existingDevice = uci.get('wireless', devname);
 
 			if (existingDevice == null || existingDevice['.type'] != 'wifi-device')
@@ -1423,9 +1435,7 @@ Network = baseclass.extend(/** @lends LuCI.network.prototype */ {
 	 * the configuration.
 	 */
 	getWifiDevices() {
-		return initNetworkState().then(L.bind(function() {
-			refreshWirelessState();
-
+		return initNetworkState().then(waitForWirelessState).then(L.bind(function() {
 			const uciWifiDevices = uci.sections('wireless', 'wifi-device');
 			const rv = [];
 
@@ -1469,9 +1479,7 @@ Network = baseclass.extend(/** @lends LuCI.network.prototype */ {
 	 * be found.
 	 */
 	getWifiNetwork(netname) {
-		return initNetworkState().then(L.bind(function() {
-			refreshWirelessState();
-
+		return initNetworkState().then(waitForWirelessState).then(L.bind(function() {
 			return this.lookupWifiNetwork(netname);
 		}, this));
 	},
@@ -1486,9 +1494,7 @@ Network = baseclass.extend(/** @lends LuCI.network.prototype */ {
 	 * are found.
 	 */
 	getWifiNetworks() {
-		return initNetworkState().then(L.bind(function() {
-			refreshWirelessState();
-
+		return initNetworkState().then(waitForWirelessState).then(L.bind(function() {
 			const wifiIfaces = uci.sections('wireless', 'wifi-iface');
 			const rv = [];
 

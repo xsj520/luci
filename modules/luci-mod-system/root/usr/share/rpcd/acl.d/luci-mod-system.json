@@ -10,14 +10,14 @@
 				"luci": [ "getLEDs", "getTimezones", "getUSBDevices", "getUnixtime" ],
 				"rc": [ "list" ]
 			},
-			"uci": [ "luci", "system" ]
+			"uci": [ "firewall", "luci", "system" ]
 		},
 		"write": {
 			"ubus": {
 				"luci": [ "setLocaltime", "setPassword" ],
 				"rc": [ "init" ]
 			},
-			"uci": [ "luci", "system" ]
+			"uci": [ "firewall", "luci", "system" ]
 		}
 	},
 
@@ -154,6 +154,7 @@
 				"/dev/mtdblock[0-9]*": [ "read" ],
 				"/etc/sysupgrade.conf": [ "read" ],
 				"/lib/upgrade/platform.sh": [ "list" ],
+				"/proc/[0-9]*/mounts": [ "read" ],
 				"/proc/mounts": [ "read" ],
 				"/proc/mtd": [ "read" ],
 				"/proc/partitions": [ "read" ],

@@ -83,6 +83,72 @@ function renderbox(ifc, ipv6, dhcpv6_stats) {
 return baseclass.extend({
 	title: _('Network'),
 
+	wanDevices(networks) {
+		const lower = new Map(), devices = new Map();
+		for (const net of networks) {
+			const l3 = net.getL3Device(), l2 = net.getL2Device();
+			if (l3 && l2 && l3.getName() != l2.getName())
+				lower.set(l3.getName(), l2);
+		}
+		for (const net of networks) {
+			let dev = net.getL2Device() || net.getL3Device();
+			const seen = new Set();
+			while (dev && !seen.has(dev.getName())) {
+				seen.add(dev.getName());
+				// Follow PPPoE and VLAN layers, but retain individual DSA ports.
+				const parent = lower.get(dev.getName()) || (dev.getType() == 'vlan' ? dev.getParent() : null);
+				if (!parent || seen.has(parent.getName()))
+					break;
+				dev = parent;
+			}
+			if (dev)
+				devices.set(dev.getName(), dev);
+		}
+		return devices;
+	},
+
+	wanCapacity(devices) {
+		let capacity = 0;
+		for (const dev of devices.values()) {
+			const speed = Number(dev.getSpeed());
+			capacity += Number.isFinite(speed) && speed > 0 && speed < 0xffffffff ? speed : 1000;
+		}
+		return capacity || 1000;
+	},
+
+	bandwidthBar(value, capacity) {
+		if (value != null)
+			value = Number.isFinite(value) ? Math.max(0, Math.min(value, capacity)) : null;
+		const percent = value != null ? Math.max(0, value / capacity * 100) : 0;
+		return E('div', {
+			'class': 'cbi-progressbar',
+			'title': value != null
+				? '%.2f Mbps / %s Gbps (%.1f%%)'.format(value, capacity / 1000, percent)
+				: '- / %s Gbps'.format(capacity / 1000)
+		}, E('div', { 'style': 'width:%.2f%%'.format(Math.min(100, percent)) }));
+	},
+
+	wanRates(devices, now) {
+		const previous = this.wanSamples || new Map();
+		const samples = new Map();
+		let download = 0, upload = 0, ready = true;
+		for (const dev of devices.values()) {
+			const name = dev.getName();
+			const sample = { rx: dev.getRXBytes(), tx: dev.getTXBytes(), time: now };
+			const old = previous.get(name);
+			samples.set(name, sample);
+			if (!old || now <= old.time || sample.rx < old.rx || sample.tx < old.tx) {
+				ready = false;
+				continue;
+			}
+			// bytes / milliseconds * 8 / 1000 = decimal Mbps.
+			download += (sample.rx - old.rx) * 8 / (now - old.time) / 1000;
+			upload += (sample.tx - old.tx) * 8 / (now - old.time) / 1000;
+		}
+		this.wanSamples = samples;
+		return ready && samples.size ? [download, upload] : [null, null];
+	},
+
 	load() {
 		return Promise.all([
 			fs.trimmed('/proc/sys/net/netfilter/nf_conntrack_count'),
@@ -96,15 +162,22 @@ return baseclass.extend({
 
 	render([ct_count, ct_max, wan_nets, wan6_nets, dhcpv6_stats, onlineusers]) {
 
+		const networks = [...wan_nets, ...wan6_nets];
+		const devices = this.wanDevices(networks);
+		const [download, upload] = this.wanRates(devices, performance.now());
+		const capacity = this.wanCapacity(devices);
+
 		const fields = [
 			{ label: _('Active Connections'), value: ct_max ? ct_count : null },
-			{ label: _('Online Users'), value: onlineusers ? onlineusers.onlineusers : null }
+			{ label: _('Online Users'), value: onlineusers ? onlineusers.onlineusers : null },
+			{ label: _('Total upload bandwidth'), value: this.bandwidthBar(upload, capacity) },
+			{ label: _('Total download bandwidth'), value: this.bandwidthBar(download, capacity) }
 		];
 
 		const ctstatus = E('table', { 'class': 'table' });
 
 		for (const { label, value } of fields) {
-			if (label == _('Online Users')) {
+			if (label != _('Active Connections')) {
 				ctstatus.appendChild(E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td left', 'width': '33%' }, [ label ]),
 					E('td', { 'class': 'td left' }, [

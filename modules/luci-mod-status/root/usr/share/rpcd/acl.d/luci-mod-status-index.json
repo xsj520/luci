@@ -2,8 +2,11 @@
 	"luci-mod-status-index": {
 		"description": "Grant access to main status display",
 		"read": {
+			"cgi-io": [ "exec" ],
 			"file": {
 				"/etc/board.json": [ "read" ],
+				"/usr/libexec/luci-arp": [ "exec" ],
+				"/tmp/luci-client-history.json": [ "read" ],
 				"/proc/sys/net/netfilter/nf_conntrack_count": [ "read" ],
 				"/proc/sys/net/netfilter/nf_conntrack_max": [ "read" ],
 				"/www/luci-static/resources/view/status/include": [ "list" ]
