@@ -69,6 +69,9 @@ return view.extend({
 
 		m = new form.Map('firewall', _('Firewall - Zone Settings'),
 			_('The firewall creates zones over your network interfaces to control network traffic flow.'));
+		const hasQualcommECM = runtimeStatus?.ecm_available === true;
+		if (hasQualcommECM)
+			m.chain('ecm');
 
 		s = m.section(form.TypedSection, 'defaults', _('General Settings'));
 		s.anonymous = true;
@@ -117,7 +120,7 @@ return view.extend({
 		/* Netfilter flow offload support */
 
 		const hasMediatekHNAT = fw4 && runtimeStatus?.hnat_available === true;
-		if (L.hasSystemFeature('offloading') || hasMediatekHNAT) {
+		if (L.hasSystemFeature('offloading') || hasMediatekHNAT || hasQualcommECM) {
 			s = m.section(form.TypedSection, 'defaults', _('Routing/NAT Offloading'),
 				_('Not fully compatible with QoS/SQM.'));
 
@@ -126,23 +129,33 @@ return view.extend({
 
 			o = s.option(form.RichListValue, "offloading_type", _("Flow offloading type"));
 			o.value('0', _("None"));
-			o.value('1', _("Software flow offloading"), _('Software based offloading for routing/NAT.'));
+			if (L.hasSystemFeature('offloading'))
+				o.value('1', _("Software flow offloading"), _('Software based offloading for routing/NAT.'));
 			if (L.hasSystemFeature('offloading_hw'))
 				o.value('2', _("Hardware flow offloading"), _('Hardware based offloading for routing with/without NAT.') + ' ' + _(' Requires hardware NAT support.'));
 			if (hasMediatekHNAT)
-				o.value('3', "Mediatek HNAT", "基于Mediatek原厂闭源驱动的HNAT卸载");
+				o.value('3', _('MediaTek HNAT'), _('Hardware NAT offloading using the MediaTek vendor driver.'));
+			if (hasQualcommECM)
+				o.value('4', _('Qualcomm NSS ECM acceleration'), _('Automatically select the acceleration engine in ECM Auto mode.'));
 			o.optional = false;
 			o.load = function (section_id) {
 				const flow_offloading = uci.get('firewall', section_id, 'flow_offloading');
 				const flow_offloading_hw = uci.get('firewall', section_id, 'flow_offloading_hw');
 				const has_hw_offloading = L.hasSystemFeature('offloading_hw');
+				if (hasQualcommECM && uci.get('ecm', 'global', 'acceleration_engine') !== 'disabled')
+					return '4';
 				if (hasMediatekHNAT && flow_offloading === '3')
 					return '3';
-				return (flow_offloading === '1')
+				return (flow_offloading === '1' && L.hasSystemFeature('offloading'))
 					? ((flow_offloading_hw === '1' && has_hw_offloading) ? '2' : '1')
 					: '0';
 			};
 			o.write = function(section_id, value) {
+				if (hasQualcommECM) {
+					if (!uci.get('ecm', 'global'))
+						uci.add('ecm', 'ecm', 'global');
+					uci.set('ecm', 'global', 'acceleration_engine', value === '4' ? 'auto' : 'disabled');
+				}
 				uci.set('firewall', section_id, 'flow_offloading', value === '3' ? '3' : ((value === '1' || value === '2') ? '1' : '0'));
 				uci.unset('firewall', section_id, 'mediatek_hnat');
 				uci.set('firewall', section_id, 'flow_offloading_hw',

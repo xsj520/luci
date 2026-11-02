@@ -30,6 +30,12 @@ const callIwinfoDevices = rpc.declare({
 	method: 'devices',
 	expect: { devices: [] }
 });
+const callIwinfoScanCompat = rpc.declare({
+	object: 'iwinfo',
+	method: 'scan',
+	params: [ 'device' ],
+	expect: { results: [] }
+});
 const callSystemBoard = rpc.declare({
 	object: 'system',
 	method: 'board',
@@ -62,7 +68,12 @@ function mergeUniqueValues(...lists) {
 	return merged;
 }
 
+let runtimeIfnames = Object.create(null);
+
 function getQcaFallbackIfname(device, section) {
+	if (Object.prototype.hasOwnProperty.call(runtimeIfnames, section))
+		return runtimeIfnames[section];
+
 	if (/^ath\d+$/.test(String(section || '')))
 		return section;
 
@@ -252,13 +263,14 @@ function loadIwinfoResolver(force) {
 	if (!force && cachedIwinfoResolver != null)
 		return Promise.resolve(cachedIwinfoResolver);
 
-	const configuredDevices = getIwinfoDevicesFromConfig();
-	const deviceRequest = configuredDevices != null
-		? Promise.resolve(configuredDevices)
-		: L.resolveDefault(callIwinfoDevices(), []);
-
-	cachedIwinfoResolverPromise = deviceRequest.then((devices) => {
-		cachedIwinfoResolver = buildIwinfoResolver(devices, configuredDevices != null);
+	cachedIwinfoResolverPromise = network.getWifiRuntimeIfnames().then((names) => {
+		runtimeIfnames = names;
+		const configuredDevices = getIwinfoDevicesFromConfig();
+		return (configuredDevices != null ? Promise.resolve(configuredDevices)
+			: L.resolveDefault(callIwinfoDevices(), [])).then((devices) =>
+			buildIwinfoResolver(devices, configuredDevices != null));
+	}).then((resolver) => {
+		cachedIwinfoResolver = resolver;
 		cachedIwinfoResolverPromise = null;
 		return cachedIwinfoResolver;
 	}).catch(() => {
@@ -295,6 +307,16 @@ function loadIwinfoInfoMap(force) {
 		return Promise.all(queryTargets.map((name) =>
 			L.resolveDefault(callIwinfoInfoCompat(name), null).then((info) => [ name, info ])
 		)).then(async (entries) => {
+			await Promise.all(entries.map(async ([ name, info ]) => {
+				const iface = uci.sections('wireless', 'wifi-iface').find((iface) =>
+					isQcaWifiHwtype(uci.get('wireless', iface.device, 'type')) &&
+					resolver.aliasMap[iface['.name']] == name);
+				if (!iface || info?.mode != 'Master' || !/^ath\d+(?:\.\d+)?$/.test(name))
+					return;
+				const output = await L.resolveDefault(fs.exec_direct('/usr/sbin/cfg80211tool',
+					[ name, 'get_maxrate' ]), '');
+				info.theoretical_bitrate = parseQcaMaxPhyRate(output);
+			}));
 			const phyQueries = {};
 			for (const [ name, info ] of entries) {
 				if (info?.hardware?.id?.[0] != 0x14c3 || !/^phy\d+$/.test(info?.phy || ''))
@@ -444,11 +466,14 @@ function isNetworkDisplayUp(radioNet) {
 }
 
 function getRadioDisplayName(radioDev) {
+	const info = cachedIwinfoInfoMap?.[radioDev.getName()];
+	if (info?.hardware?.name && !/^Generic(?:\s|$)/i.test(info.hardware.name))
+		return info.hardware.name + (info.hwmodes_text ? ' 802.11' + info.hwmodes_text : '');
 	const name = radioDev.getI18n().replace(/ Wireless Controller .+$/, '');
 	const hwtype = uci.get('wireless', radioDev.getName(), 'type');
 	const hwmode = uci.get('wireless', radioDev.getName(), 'hwmode') || '';
 
-	if (!/^Generic unknown$/.test(name) && !/^Generic 802\.11unknown$/.test(name))
+	if (!/^Generic(?:\s|$)/i.test(name))
 		return name;
 
 	if (!isQcaWifiHwtype(hwtype))
@@ -608,7 +633,9 @@ function getDisplayEncryption(radioNet) {
 
 function getDisplayBSSID(radioNet) {
 	// A radio MAC may differ from the BSSID of an individual virtual AP.
+	const target = cachedIwinfoResolver?.aliasMap[radioNet.getName()];
 	const candidates = [
+		cachedIwinfoInfoMap?.[target]?.bssid,
 		radioNet.getActiveBSSID(),
 		radioNet.getBSSID(),
 		uci.get('wireless', radioNet.getName(), 'macaddr')
@@ -666,8 +693,6 @@ function getDisplayTxPower(radioNet) {
 
 		if (isPlausibleTxPowerValue(txpower, hwtype))
 			return txpower;
-		if (isPlausibleTxPowerValue(cfgvalue, hwtype))
-			return cfgvalue;
 		return null;
 	}
 
@@ -991,8 +1016,9 @@ function calculateEhtCapabilityRate(info, phyInfo) {
 
 function getDisplayTheoreticalBitRate(radioNet) {
 	const device = radioNet.getWifiDeviceName();
-	if (uci.get('wireless', device, 'type') != 'mt_dbdc' ||
-	    !/^EHT/.test(uci.get('wireless', device, 'htmode') || ''))
+	const hwtype = uci.get('wireless', device, 'type');
+	if (!(isQcaWifiHwtype(hwtype) && radioNet.getMode() == 'ap') &&
+	    !(hwtype == 'mt_dbdc' && /^EHT/.test(uci.get('wireless', device, 'htmode') || '')))
 		return null;
 
 	for (const candidate of getIwinfoInfoCandidates(radioNet)) {
@@ -1003,7 +1029,19 @@ function getDisplayTheoreticalBitRate(radioNet) {
 	return null;
 }
 
+/* QSDK returns the running BSS PHY ceiling in kbit/s, including its
+ * bandwidth-dependent NSS mapping. Never infer it from client rates. */
+function parseQcaMaxPhyRate(output) {
+	const match = String(output || '').match(/\bget_maxrate:\s*(\d+)\s*$/m);
+	const rate = match ? +match[1] : 0;
+	return rate > 0 ? Math.round(rate / 100) / 10 : null;
+}
+
 function getDisplayBitRate(radioNet) {
+	if (isQcaWifiHwtype(uci.get('wireless', radioNet.getWifiDeviceName(), 'type')) &&
+	    radioNet.getMode() == 'ap')
+		return getDisplayTheoreticalBitRate(radioNet);
+
 	let rate = radioNet.getBitRate();
 	const hwmode = uci.get('wireless', radioNet.getWifiDeviceName(), 'hwmode') || '';
 	const htmode = uci.get('wireless', radioNet.getWifiDeviceName(), 'htmode') || '';
@@ -1260,7 +1298,6 @@ function parseIwPhyMaxWidthMap(stdout) {
 
 		const widthHint = rawLine.match(/Supported Channel Width:\s*(.+)$/);
 		if (widthHint) {
-			let maxWidth = 20;
 			const widths = [];
 
 			widthHint[1].replace(/\b(20|40|80|160|320)\s*MHz\b/g, function(_, mhz) {
@@ -1271,9 +1308,13 @@ function parseIwPhyMaxWidthMap(stdout) {
 				widths.push(160);
 
 			if (widths.length)
-				maxWidth = Math.max.apply(Math, widths);
+				mapping[currentPhy] = Math.max(mapping[currentPhy] || 0, Math.max.apply(Math, widths));
+			continue;
+		}
 
-			mapping[currentPhy] = Math.max(mapping[currentPhy] || 0, maxWidth);
+		const heWidth = rawLine.match(/HE(?:\s+(?:RX|TX) MCS and NSS set\s+|)(160|80\+80)(?:\s*MHz|\/5GHz)/);
+		if (heWidth) {
+			mapping[currentPhy] = Math.max(mapping[currentPhy] || 0, 160);
 			continue;
 		}
 
@@ -1408,7 +1449,7 @@ function getDisplaySignalValue(radioNet, hwtype, is_assoc) {
 	if (hwtype == 'mt_dbdc' && radioNet.getMode() == 'ap')
 		return is_assoc ? getDisplayTxPower(radioNet) : null;
 	if (isQcaWifiHwtype(hwtype) && radioNet.getMode() == 'ap' && is_assoc)
-		return getDisplayTxPower(radioNet) ?? 30;
+		return getDisplayTxPower(radioNet);
 
 	return radioNet.getSignal();
 }
@@ -1748,7 +1789,9 @@ var CBIWifiFrequencyValue = form.Value.extend({
 		const chval = +cfg_channel;
 		const allow_auto = (hwtype == 'mt_dbdc' || isQcaWifiHwtype(hwtype) ||
 			cfg_channel == 'auto' || L.hasSystemFeature('hostapd', 'acs'));
-		const configOnly = isConfigWifiDeviceDisabled(device_section) ||
+		const queryDevice = isQcaWifiHwtype(hwtype)
+			? cachedIwinfoResolver?.aliasMap[device_section] : device_section;
+		const configOnly = !queryDevice || isConfigWifiDeviceDisabled(device_section) ||
 			(isQcaWifiHwtype(hwtype) && areQcaRuntimeProbesSuspended());
 		const configDevice = configOnly
 			? network.getWifiDevicesFromConfig().find((device) => device.getName() == device_section)
@@ -1756,8 +1799,8 @@ var CBIWifiFrequencyValue = form.Value.extend({
 
 		return Promise.all([
 			configOnly ? configDevice : network.getWifiDevice(device_section),
-			configOnly ? [] : this.callFrequencyList(device_section),
-			configOnly ? {} : this.callDeviceInfo(device_section),
+			configOnly ? [] : this.callFrequencyList(queryDevice),
+			configOnly ? {} : this.callDeviceInfo(queryDevice),
 			configOnly ? {} : L.resolveDefault(this.callWirelessStatus(), {}),
 			!configOnly && isQcaWifiHwtype(hwtype) ? L.resolveDefault(fs.exec_direct('/usr/sbin/iw', [ 'dev' ]), '') : '',
 			!configOnly && isQcaWifiHwtype(hwtype) ? L.resolveDefault(fs.exec_direct('/usr/sbin/iw', [ 'phy' ]), '') : '',
@@ -1851,6 +1894,12 @@ var CBIWifiFrequencyValue = form.Value.extend({
 			if (!htmode_values.length)
 				htmode_values = L.toArray(devinfo.htmodes);
 
+			// Config-only WifiDevice instances default to b/g, even for a 5 GHz radio.
+			if (isQcaWifiHwtype(hwtype) && Array.isArray(devinfo.hwmodes))
+				hwmode_values = devinfo.hwmodes;
+			if (isQcaWifiHwtype(hwtype) && Array.isArray(devinfo.htmodes))
+				htmode_values = devinfo.htmodes;
+
 			if (!hwmode_values.length) {
 				if (/^11be/.test(hwval) || /^EHT/.test(htval))
 					hwmode_values = [ 'be' ];
@@ -1904,7 +1953,8 @@ var CBIWifiFrequencyValue = form.Value.extend({
 				const qca_ht320 = (!!(htmodelist.EHT320 || /^HT320$/.test(htval)) && qca_max_width >= 320);
 
 				this.modes = [
-					'', 'Legacy', { available: false },
+					'', hwtype == 'qcawifi' ? (hwmodelist.a ? 'A' : 'B/G') : 'Legacy',
+					{ available: hwtype == 'qcawifi' && (hwmodelist.a || hwmodelist.b || hwmodelist.g) },
 					'n', 'N', { available: qca_has_n },
 					'ac', 'AC', { available: qca_has_ac },
 					'ax', 'AX', { available: qca_has_ax },
@@ -1939,13 +1989,20 @@ var CBIWifiFrequencyValue = form.Value.extend({
 					]
 				};
 
+				if (hwtype == 'qcawifi')
+					for (let i = 0; i < this.htmodes.ac.length; i += 3)
+						this.htmodes.ac[i] = this.htmodes.ac[i].replace(/^HT/, 'VHT');
+
 				this.bands = {
 					'': [
 						'2g', '2.4 GHz', { available: has_band_channels('2g') },
 						'5g', '5 GHz', { available: has_band_channels('5g') },
 						'6g', '6 GHz', { available: has_band_channels('6g') }
 					],
-					'n': [ '2g', '2.4 GHz', { available: has_band_channels('2g') } ],
+					'n': [
+						'2g', '2.4 GHz', { available: has_band_channels('2g') },
+						'5g', '5 GHz', { available: hwtype == 'qcawifi' && has_band_channels('5g') }
+					],
 					'ac': [ '5g', '5 GHz', { available: has_band_channels('5g') } ],
 					'ax': [
 						'2g', '2.4 GHz', { available: has_band_channels('2g') },
@@ -2406,10 +2463,9 @@ var CBIWifiFrequencyValue = form.Value.extend({
 			const qcaBand = (hwtype == 'qcawificfg80211') ? getQcaBandCode(band) : null;
 
 			if (hwtype == 'qcawifi') {
-				if (mode == 'ac')
-					hwmode = '11ac';
-				else if (mode == 'n')
-					hwmode = '11ng';
+				// QCA10 netifd uses the band in hwmode and HT/VHT in htmode.
+				hwmode = band == '5g' ? '11a' : '11g';
+				setValue('htmode', mode == 'ac' ? htmode.replace(/^HT/, 'VHT') : (htmode || null));
 			}
 			else if (hwtype == 'qcawificfg80211') {
 				switch (mode) {
@@ -2469,7 +2525,9 @@ var CBIWifiTxPowerValue = form.ListValue.extend({
 			return form.ListValue.prototype.load.apply(this, [section_id]);
 		}
 
-		return this.callTxPowerList(section_id).then(L.bind(function(pwrlist) {
+		const queryDevice = isQcaWifiHwtype(hwtype)
+			? cachedIwinfoResolver?.aliasMap[device_section] : section_id;
+		return (queryDevice ? this.callTxPowerList(queryDevice) : Promise.resolve([])).then(L.bind(function(pwrlist) {
 			this.powerval = this.wifiNetwork ? getDisplayTxPower(this.wifiNetwork) : null;
 			this.poweroff = this.wifiNetwork ? this.wifiNetwork.getTXPowerOffset() : null;
 
@@ -2673,10 +2731,12 @@ return view.extend({
 			callSystemBoard()
 		]).then((data) => {
 			this.boardinfo = data[4] || {};
-			/* MTK capability rates need iwinfo and the PHY MCS/NSS map.
-			 * Populate them before the first render, not the next poll. */
+			/* Config-only radios need their runtime iwinfo before the first render,
+			 * including QCA VAP names and MTK PHY capability rates. */
 			if (!this.checkAnonymousSections() &&
-			    uci.sections('wireless', 'wifi-device').some(radio => radio.type == 'mt_dbdc'))
+			    uci.sections('wireless', 'wifi-device').some(radio =>
+				radio.type == 'mt_dbdc' ||
+				(isQcaWifiHwtype(radio.type) && !areQcaRuntimeProbesSuspended())))
 				return loadIwinfoInfoMap(false).then(() => data);
 			return data;
 		});
@@ -2972,14 +3032,18 @@ return view.extend({
 					o.wifiNetwork = radioNet;
 
 					if (ppeVpTarget) {
-						o = ss.taboption('advanced', form.Flag, 'ppe_vp', _('Enable wireless PPE acceleration'));
+						o = ss.taboption('advanced', form.Flag, 'ppe_vp', _('Enable wireless PPE acceleration'),
+							_('Direct Switch (DS): Wi-Fi exchanges packets with PPE directly, without passing them through the CPU.'));
 						o.ucisection = radioNet.getName();
-						o.enabled = 'active';
+						o.enabled = '3';
 						o.disabled = 'none';
 						o.rmempty = false;
+						/* Direct Switch is ppe_vp 3. Any other type, or none set (the
+						 * driver script then uses Active VP), shows as enabled, so saving
+						 * switches it to Direct Switch instead of writing 'none'. */
 						o.cfgvalue = function(section_id) {
 							const value = uci.get('wireless', this.ucisection ?? section_id, 'ppe_vp');
-							return (value == null || value === '') ? 'active' : value;
+							return (value === 'none' || value === '0') ? 'none' : '3';
 						};
 					}
 				}
@@ -3313,6 +3377,15 @@ return view.extend({
 					o.depends('mode', 'ap');
 					o.depends('mode', 'ap-wds');
 					o.default = o.enabled;
+
+					if (hwtype == 'qcawifi' &&
+					    cachedIwinfoInfoMap?.[radioNet.getWifiDeviceName()]?.hwmodes?.includes('ac')) {
+						o = ss.taboption('advanced', form.Flag, 'vhtmubfer', _('MU-MIMO'));
+						o.depends('mode', 'ap');
+						o.depends('mode', 'ap-wds');
+						o.default = o.disabled;
+						o.rmempty = false;
+					}
 
 					o = ss.taboption('advanced', form.Flag, 'doth', '802.11h');
 					o.depends('mode', 'ap');
@@ -4548,7 +4621,15 @@ return view.extend({
 		};
 
 		s.handleScanRefresh = function(radioDev, scanCache, table, stop) {
-			return radioDev.getScanList().then(L.bind(function(results) {
+			const radio = radioDev.getName();
+			const scan = isQcaWifiHwtype(uci.get('wireless', radio, 'type'))
+				? loadIwinfoResolver().then(function(resolver) {
+					const target = resolver.aliasMap[radio];
+					return target ? callIwinfoScanCompat(target) : [];
+				})
+				: radioDev.getScanList();
+
+			return scan.then(L.bind(function(results) {
 				const rows = [];
 
 				for (let r of results)
